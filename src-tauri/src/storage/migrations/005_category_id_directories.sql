@@ -1,0 +1,3 @@
+-- Category directories are derived from root_path/category_id.
+-- Existing rows are rewritten by the Rust migration so Windows path semantics
+-- are handled without relying on SQLite path functions.

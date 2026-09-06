@@ -3,5 +3,5 @@
   "identifier": "main-window",
   "description": "Minimal capability for the main application window",
   "windows": ["main"],
-  "permissions": []
+  "permissions": ["dialog:default", "core:event:default"]
 }

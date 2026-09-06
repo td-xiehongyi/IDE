@@ -15,10 +15,13 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",
+    "evaluate:ai": "node scripts/evaluate-ai.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.8.1",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

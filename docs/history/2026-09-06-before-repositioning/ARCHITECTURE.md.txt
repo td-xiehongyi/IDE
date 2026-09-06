@@ -1,0 +1,403 @@
+# AI File Organizer 系统架构
+
+| 属性 | 值 |
+| --- | --- |
+| 状态 | 阶段一至四已完成；阶段五内部开发版；阶段六至十设计完成、未实现 |
+| 目标版本 | `v0.1.0` 文件整理基础；`v0.2.0` 知识库与受控 Agent |
+| 最后更新 | `2026-08-23` |
+
+## 文档目的
+
+本文档说明当前系统与个人知识库目标架构的边界、模块职责、依赖方向、数据流和持久化策略。产品需求见[产品需求文档](./PRD.md)，规范性规则见[安全模型](./SAFETY_MODEL.md)，阶段四接口见[阶段四开发指南](./PHASE_04_OPERATIONS.md)，转型边界见[总设计](./superpowers/specs/2026-08-23-ai-knowledge-agent-transformation-design.md)，实施顺序见[开发路线图](./ROADMAP.md)。涉及安全边界的描述如有冲突，以安全模型为准。
+
+## 架构目标
+
+- 建立 React 前端与 Rust 后端之间明确、窄化的能力边界。
+- 让扫描、搜索和基础浏览不依赖 AI Provider。
+- 阶段四起让用户操作与 AI 建议复用同一套校验、预览、确认和执行管线。
+- 阶段五在本地完成格式识别与正文提取，使原始正文的生命周期与持久化结果明确分离。
+- 以本地文件系统为真实状态来源，以 SQLite 保存可重建索引和应用持久数据。
+- 不向前端或 AI 暴露 Shell、任意文件系统访问或未经计划绑定的执行能力。
+- 阶段六至十计划以 IDE 工作台承载知识空间、引用问答、安全编辑与 Agent，同时保持既有文件操作管线不变。
+- 让知识文本块、向量、会话、编辑版本和 Agent 审计成为明确授权、可清除且按知识空间隔离的本地数据。
+
+## 系统边界
+
+```text
+┌──────────────── React / TypeScript ────────────────┐
+│ 页面与组件 → feature 状态 → src/lib 受控调用       │
+└──────────────────────┬─────────────────────────────┘
+                       │ 结构化 Tauri 请求与响应
+┌──────────────────────▼─────────────────────────────┐
+│ Tauri Command → Rust service → models / storage    │
+│                              ↘ 本地文件系统         │
+└──────────────────────┬─────────────────────────────┘
+                       │ 可选、经用户同意的数据请求
+                 本地或远程 AI Provider
+```
+
+- React 负责展示、交互和提交结构化请求，不直接访问本地文件系统、SQLite 或 Shell。
+- Tauri Command 是前后端唯一能力入口，只接收窄化请求并返回结构化结果。
+- Rust service 负责路径策略、只读扫描、分页搜索、变化监听、操作校验、安全执行、计划生命周期、撤销资格判断、内容提取与 AI 结果校验。
+- storage 负责系统应用数据路径、SQLite 迁移、扫描根目录、文件索引、扫描错误、操作历史与 AI 派生结果。
+- AI Provider 已接入本地 Ollama；它只生成建议，不连接文件执行器，也不持有执行计划的确认权限。
+
+阶段六至十实现后，Rust 中会增加 workspace、document、knowledge-index、retrieval、conversation、document-edit 与 agent application service。Agent 只能调用公开工具接口，不能依赖文件执行器、计划存储、撤销服务或数据库连接。向量仓储和嵌入 Provider 均通过接口隔离；当前尚未接入 `sqlite-vec` 或 `qwen3-embedding:0.6b`。
+
+## 目录边界
+
+```text
+MyApp/
+├── README.md
+├── package.json
+├── vite.config.ts
+├── vitest.config.ts
+├── tsconfig.json
+├── docs/
+│   ├── PRD.md
+│   ├── ARCHITECTURE.md
+│   ├── PHASE_04_OPERATIONS.md
+│   ├── SAFETY_MODEL.md
+│   └── ROADMAP.md
+├── src/
+│   ├── main.tsx
+│   ├── app/
+│   │   ├── App.tsx
+│   │   ├── App.test.tsx
+│   │   └── styles.css
+│   ├── features/files/
+│   │   ├── DirectoryPicker.tsx
+│   │   ├── ScanProgress.tsx
+│   │   ├── ScanSummary.tsx
+│   │   ├── FilesFeature.tsx
+│   │   ├── FileBrowser.tsx
+│   │   ├── FileList.tsx
+│   │   ├── SearchBar.tsx
+│   │   ├── FileFilters.tsx
+│   │   ├── useFiles.ts
+│   │   └── FileBrowser.test.tsx
+│   ├── features/operations/
+│   │   ├── OperationPanel.tsx
+│   │   ├── OperationPreview.tsx
+│   │   └── OperationHistory.tsx
+│   ├── lib/
+│   │   ├── files-api.ts
+│   │   ├── operations-api.ts
+│   │   └── search-api.ts
+│   ├── types/
+│   │   ├── files.ts
+│   │   ├── operations.ts
+│   │   └── search.ts
+│   └── test/
+│       └── setup.ts
+├── src-tauri/
+│   ├── Cargo.toml
+│   ├── tauri.conf.json
+│   ├── capabilities/
+│   │   └── default.json
+│   ├── src/
+│   │   ├── main.rs
+│   │   ├── lib.rs
+│   │   ├── commands/            # 扫描、搜索与操作入口
+│   │   ├── models/              # 文件、搜索、扫描与操作模型
+│   │   ├── services/            # 路径、扫描、监听与安全操作管线
+│   │   └── storage/             # 应用数据路径、SQLite、索引与历史仓储
+│   └── tests/
+│       ├── app_smoke.rs
+│       ├── scanner_integration.rs
+│       ├── path_safety_integration.rs
+│       ├── storage_integration.rs
+│       ├── search_integration.rs
+│       ├── watcher_integration.rs
+│       ├── operation_safety.rs
+│       ├── batch_failure_integration.rs
+│       └── undo_integration.rs
+└── tests/e2e/                    # 阶段十一规划，尚未创建
+```
+
+阶段一至四已建立可运行的桌面入口、只读扫描与 SQLite 索引、分页文件浏览、搜索筛选、当前根目录监听以及安全的手动文件操作。阶段五已经建立 `src/features/ai/` 与 `src-tauri/src/ai/` 的内部开发版；`tests/e2e/` 以及阶段六至十的工作台、知识、编辑和 Agent 模块仍未实现。
+
+## 前端职责
+
+### `src/app/`
+
+- React 应用入口、根布局、全局样式和应用级组合逻辑。
+- 可以组合业务 feature，但不承载具体文件管理规则。
+
+### `src/components/`
+
+- 存放无业务含义的共享 UI 组件，例如按钮、对话框、表格外壳和状态提示。
+- 不直接调用 Tauri Command，也不包含扫描、文件操作或 AI 规则。
+
+### `src/features/files/`
+
+- 承载目录选择、扫描进度、文件列表、排序、筛选、搜索和变化提示。
+- 只通过 `src/lib/` 中的受控接口请求后端能力。
+
+### `src/features/operations/`
+
+- 阶段四已建立。
+- 承载操作草案、From/To 预览、确认、执行结果、历史和撤销资格展示。
+- 不能直接构造文件系统写入或绕过后端计划执行操作。
+
+### `src/features/ai/`
+
+- 阶段五已建立，承载文件选择、内容分析状态、Ollama 模型配置、分类配置、建议生成和逐项审查界面；当前没有远程 Provider 或发送同意界面。
+- 只产生或编辑操作草案，不持有直接文件执行能力。
+
+### 阶段六至十前端目标领域（未实现）
+
+```text
+app-shell / workspaces / explorer / documents / search / operations
+knowledge-index / assistant / agent / approvals / activity / settings
+```
+
+- `WorkspaceSession`、`ExplorerState`、`DocumentSession`、`AssistantSession`、`AgentSession` 和 `ActivityState` 分别拥有会话状态。
+- 面板尺寸、折叠和最近标签属于 UI 会话；知识空间、索引、对话、版本与审计属于 Rust/SQLite 业务状态。
+- 工作台固定为顶部控制区、左侧多根目录树、中间文档标签区、右侧统一助理区和底部活动区。
+
+### `src/lib/`
+
+- 封装窄化的 Tauri 调用、请求响应映射和错误转换。
+- 不提供接受任意命令名、路径操作或 Shell 命令的通用包装器。
+
+### `src/types/`
+
+- 描述文件条目、扫描状态、搜索条件、操作草案、预览、执行结果、历史和撤销资格等共享类型；AI 建议类型留给阶段五。
+- 类型与 Rust 对外数据保持一致，但不包含文件执行逻辑。
+
+## Rust 后端职责
+
+### `src-tauri/src/commands/`
+
+- Tauri Command 的唯一入口目录。
+- Command 只接收结构化请求、调用 service 并返回结构化结果，不实现复杂业务逻辑。
+
+### `src-tauri/src/models/`
+
+- 保存 Rust 领域模型和跨层数据结构。
+- 未校验操作草案、已校验计划和执行结果使用不同结构表达，防止能力混淆。
+
+### `src-tauri/src/services/`
+
+- 承载扫描、搜索、监听、路径策略、操作校验、安全执行、计划存储、文件身份和撤销资格判断；格式识别与正文提取属于阶段五。
+- 文件执行器只接收后端已校验且仍有效的计划，不接收前端临时替换的路径。
+
+### `src-tauri/src/storage/`
+
+- 解析系统应用数据路径，管理 SQLite 连接、迁移、扫描根目录、文件索引、扫描错误和操作历史仓储；AI 分析结果属于阶段五。
+- 文件索引与操作历史使用不同的持久化职责，索引重建不能清除历史。
+
+### `src-tauri/src/ai/`
+
+- 阶段五加入，定义可替换 Provider 边界和模型调用适配。
+- 当前 Provider 实现只允许环回 Ollama；远程 Provider 与正文外发入口未实现且不在 v0.1.0 或本轮范围。
+- Provider 输出必须交给 suggestion service 解析为严格的结构化建议。
+- AI 模块不能调用文件执行、历史清理或撤销服务。
+
+## 依赖方向
+
+```text
+React feature
+  → src/lib 中的受控 Tauri 调用
+  → commands
+  → services
+  → models / storage / 本地文件系统
+```
+
+依赖只能沿箭头向下。共享 UI 不依赖业务 feature；models 不依赖 commands；storage 不接受前端指定的数据库路径；前端不能绕过 commands 访问 Rust service。
+
+AI 功能加入后遵循：
+
+```text
+用户明确选择文件
+  → Rust 识别真实格式并提取临时正文
+  → 长文档分段并调用环回 Ollama
+  → AI Provider 生成结构化分析结果
+  → suggestion service 校验摘要、关键词、文件名、分类 ID、置信度和理由
+  → 分析结果持久化，原始正文销毁
+  → 用户接受仍有效的建议并转换为携带内容指纹的 AI 派生草案
+  → Rust 根据合法分类标签派生授权根目录下的单层目标目录
+  → 操作校验与 From/To 预览计划（此时不创建目录）
+  → 用户确认 planId
+  → 安全创建或复用目标目录并执行
+  → 历史记录与撤销资格判断
+```
+
+## 关键数据流
+
+### 扫描与索引
+
+```text
+用户选择真实目录
+  → Command 接收目录选择结果
+  → path policy 建立授权根目录
+  → scanner 只读遍历并汇总错误
+  → repository 事务写入文件、目录和链接元数据
+  → 前端展示进度与结果摘要
+```
+
+扫描器与监听器共享授权根目录和链接边界规则，不跟随符号链接或 Junction。单条目失败写入扫描错误并计入摘要，不扩散为整个扫描任务崩溃。成功扫描后保存最近索引状态并启动或替换当前根目录 watcher。
+
+### 搜索与变化同步
+
+```text
+前端提交结构化查询
+  → search service 校验筛选、排序和分页条件
+  → repository 使用规范化名称/路径进行 Unicode 大小写不敏感匹配
+  → SQLite 返回总数与当前页（默认每页 50，后端限制上限）
+  → 前端渲染结果
+
+磁盘变化事件
+  → watcher 复核授权边界
+  → 重新读取元数据并新增、更新、重命名或删除索引条目
+  → 发出 files://index-changed 通知前端刷新当前查询
+```
+
+监听仅覆盖当前授权根目录。目录删除或重命名会同步处理对应索引子树；越界、链接和暂时无法读取的事件作为可恢复错误处理，不破坏已有索引。应用重启后可恢复最近索引并继续查询；重建索引会先停止 watcher，清理当前文件索引与扫描错误，保留扫描根目录及其他持久化数据，再重新扫描并刷新界面。监听事件只更新索引，不创建操作草案，也不自动整理文件。
+
+### 内容分析与 AI 建议
+
+```text
+用户选择文本型 PDF、TXT、MD、DOCX 或常见代码/配置文本文件
+  → content policy 复核授权范围、文件身份与真实格式
+  → extractor 在本地提取正文到任务内存并同步计算内容指纹
+  → chunker 根据 Provider 输入预算分段
+  → 短文档直接分析；长文档逐段摘要后汇总
+  → suggestion service 校验结构化输出和现有分类 ID
+  → repository 保存分析结果与文件身份，不保存原始正文
+  → 前端展示摘要、关键词、建议、置信度、理由和采用状态
+```
+
+目录扫描和监听不会触发正文提取。当前 Rust Provider 只允许环回 Ollama，不存在远程 Provider 或正文外发入口；阶段五现行接口和安全边界见[阶段五开发指南](./PHASE_05_AI.md)。
+
+Provider 结果使用封闭 schema：`summary: string`、`keywords: string[]`、`suggested_filename: string`、`category_id: string | null`、`confidence: number`、`reason: string`。字符串必填项不得为空，文件名不得包含路径且扩展名必须与源文件一致，置信度必须位于 `[0, 1]`，不接受额外字段。分类建议使用用户配置的分类 ID；Rust 将有效语义化标签映射为授权根目录下的单层目标目录。该目录在分析和预览时可以不存在，只有用户确认计划后才由执行层安全创建或复用。AI 输出的绝对路径、未知分类或要求创建任意目录的请求一律不能转换为操作草案；`category_id` 为 `null` 时保留原目录，只允许重命名建议。
+
+内容提取在读取文件字节时同步计算专用于 AI 结果有效性的内容指纹，并在提取结束及持久化前复核元数据与平台身份；分析期间发生变化时丢弃结果。持久结果绑定该指纹，应用重启后加载或转换为操作草案前按需重新计算并核对。AI 派生的草案和已校验计划继续携带内容指纹，执行器在执行前再次复核；不一致时结果或计划失效。该指纹只进入 AI 派生操作，手动普通操作计划仍不强制计算内容哈希。扫描 PDF、加密或损坏文档、空文本、格式伪装、不支持格式、解码失败和资源限制等错误使用结构化状态返回，不调用 Provider 或生成可执行建议。
+
+### 安全文件操作
+
+```text
+用户输入或 AI 建议
+  → 未信任操作草案
+  → Rust 整批校验
+  → 内存中的一次性计划与 From/To 预览
+  → 用户只提交 planId 确认
+  → Rust 执行前复核文件状态；AI 派生计划额外复核内容指纹
+  → 逐项执行并记录真实结果
+  → 持久历史与动态撤销资格
+```
+
+计划生命周期、文件身份、冲突、批量失败和撤销的具体行为由[安全模型](./SAFETY_MODEL.md)定义。
+
+## 阶段六至十目标架构（设计完成、未实现）
+
+### 固定依赖方向
+
+```text
+React feature
+  → 窄化 Tauri Command
+  → Rust application service
+  → domain policy
+  → repository / provider / filesystem adapter
+```
+
+Tauri 接口按 `workspace/*`、`document/*`、`knowledge-index/*`、`retrieval/*`、`conversation/*`、`document-edit/*`、`agent/*`、`operations/*` 进行文档分组。斜杠不表示通用路由；实际 Command 必须是固定注册、封闭输入的窄化接口。
+
+### 知识索引
+
+```text
+文件变化
+  → 身份与指纹复核
+  → 格式提取与结构化切片
+  → 候选版本写入 FTS5
+  → EmbeddingProvider 生成向量
+  → VectorRepository 校验并写入
+  → 事务切换活动索引版本
+```
+
+原文件是事实来源。Markdown 保留标题路径，PDF 保留页码，DOCX 保留段落位置，代码保留行号。默认切片目标约 600 tokens、重叠约 80 tokens。向量层首个候选为锁定精确版本的 `sqlite-vec`，默认嵌入模型候选为 Ollama `qwen3-embedding:0.6b`；二者当前均未接入，详见[阶段七设计](./PHASE_07_KNOWLEDGE_CORE.md)。
+
+### 检索与引用问答
+
+```text
+KnowledgeQuery + ContextScope
+  → FTS5 前 20 + 向量前 20
+  → Reciprocal Rank Fusion 与多样性重排
+  → 最多 8 个带 chunkId 的文本块
+  → 本地模型结构化回答
+  → Rust 引用校验
+  → GroundedAnswer 或证据不足拒答
+```
+
+`ContextScope` 只有 `CurrentDocument`、`SelectedDocuments`、`KnowledgeSpace`。模型只能引用本次上下文中的 `chunkId`；非法引用最多修复一次，仍非法时拒绝展示。详见[阶段八设计](./PHASE_08_RAG.md)。
+
+### 安全编辑
+
+```text
+Markdown/TXT 草稿
+  → 差异与基线复核
+  → 内存一次性 editPlanId
+  → 用户确认
+  → 版本快照
+  → 同目录临时写入与受控原子替换
+  → 编辑历史与增量索引
+```
+
+前端只有在直接响应用户对当前差异的明确确认动作时，才能提交一次性 `editPlanId`；前端业务逻辑、AI 和 Agent 不得自行确认、访问计划存储或替换已预览内容。外部变化使计划失效。详见[阶段九设计](./PHASE_09_DOCUMENT_EDITING.md)。
+
+### 受控 Agent
+
+Agent 状态为 `Queued`、`Running`、`WaitingForApproval`、`Completed`、`Failed`、`Cancelled`。它只能调用 `knowledge.search`、`document.read`、`document.propose_create`、`document.propose_patch`、`file.propose_rename`、`file.propose_move`。写工具只产生提案，模型看不到 `planId` 或 `editPlanId`。审计保存脱敏、封闭的结构化参数、知识空间/文档 ID、权限决策、状态迁移与审批事件，但不保存完整正文或隐藏推理。详见[阶段十设计](./PHASE_10_AGENT.md)。
+
+### 未来远程 Provider 规范占位
+
+远程 Provider 不属于 v0.1.0、阶段六至十或本轮范围。未来若单独立项，必须先在[安全模型](./SAFETY_MODEL.md)中定义一次性批次同意、确切数据范围、预算与零凭据零外发测试；在此之前不得增加远程适配器或正文外发入口。
+
+## 持久化边界
+
+- 本地文件系统是文件存在、身份和内容状态的最终事实来源。
+- SQLite 数据库 `index.sqlite3` 统一位于操作系统提供的应用数据目录，不在扫描根目录写入数据库或旁车文件。
+- 每次仓储操作建立受控连接，并启用外键约束、WAL、忙等待超时和 `user_version` 架构版本管理。
+- 阶段一至四表包括 `scan_roots`、`file_entries`、`scan_errors` 和 `operation_history`；阶段五内部开发版另有分类、分析批次与派生结果表。实际名称和版本以 `src-tauri/src/storage/migrations/` 为准。
+- 文件索引只保存名称、规范化路径、条目类型、扩展名、大小和修改时间等元数据，不读取或保存文件正文。
+- 索引使用根目录与规范化路径唯一约束，并为根目录、名称、路径、扩展名、大小和修改时间等查询字段建立索引。
+- 重建索引只清除文件条目和扫描错误，不清除扫描根目录或操作历史。
+- 操作历史保存逐项 From/To、批次、状态、失败原因、文件身份快照和撤销关系；短期 `planId` 不进入 SQLite。
+- 短期 `planId` 只存在于 Rust 进程内存中，不写入 SQLite；应用退出后失效。
+- 前端不能指定数据库位置、直接访问 SQLite 或提交任意 SQL。
+
+阶段七至十规划新增 `knowledge_spaces`、`knowledge_roots`、`knowledge_documents`、`document_chunks`、`document_chunks_fts`、`chunk_embeddings`、`index_jobs`、`index_failures`、对话/引用、文档版本/编辑历史及 Agent 审计表。它们当前不存在。知识文本块与向量是用户明确建立知识索引后产生的可清除派生数据；这不会追溯改变阶段五“单次整理分析不持久化原始正文”的现行边界。
+
+## 错误与状态表达
+
+- Command 返回结构化成功或错误结果，前端负责将其转换为用户可理解的状态提示。
+- 扫描类任务汇总可恢复的单项错误，并保留已获得的有效结果。
+- 校验类错误阻止生成可确认计划，不产生文件变化或成功历史。
+- 批量执行使用成功、失败、未执行三种逐项状态表达真实磁盘结果。
+- Provider 错误只影响 AI 建议流程，不使扫描、搜索或手动文件操作不可用。
+- 内容提取失败、不支持格式、正文为空、用户拒绝远程发送或结果过期都返回独立状态，不生成操作草案。
+- 未来索引、检索、编辑或 Agent 错误必须局限于所属领域；向量扩展、嵌入模型或 Agent 不可用时，文件浏览与手动安全操作继续工作。
+
+## 测试分层
+
+- 前端组件和 hook 单元测试与对应 feature 放在一起，使用 `.test.ts` 或 `.test.tsx` 后缀。
+- Rust 纯逻辑单元测试放在对应模块内部。
+- 涉及 SQLite、临时文件系统或多个 Rust 模块的测试放入 `src-tauri/tests/`。
+- 阶段二集成测试覆盖路径边界、链接处理、扫描统计、重复扫描、SQLite 持久化、索引重建和重启恢复。
+- 阶段三集成测试覆盖 Unicode/Windows 路径搜索、筛选排序、分页边界、watcher 新增/修改/重命名/删除同步以及链接和越界事件隔离。
+- 阶段四集成测试覆盖操作路径与链接边界、计划生命周期、源文件变化、批量失败、历史保留与撤销冲突；前端操作组件测试覆盖草案、预览确认和历史展示。
+- 前端 `FileBrowser.test.tsx` 与 `App.test.tsx` 覆盖扫描后浏览、搜索防抖、筛选排序分页、空/错误状态、监听刷新和应用级操作入口组合。
+- 内容分析集成测试使用人工生成的非敏感 PDF、TXT、MD、DOCX 和代码/配置文本样本以及模拟本地 Provider，并验证严格 schema、有效分类映射、阶段五临时正文不进入数据库/历史/日志，以及同大小或相同修改时间替换、分析期间变化、重启后加载和 AI 草案生成后至执行前的内容指纹复核。
+- 跨前后端桌面流程和平台差异测试放入 `tests/e2e/`。
+- 所有文件系统和 SQLite 测试使用隔离临时目录与独立测试数据库，不接触用户真实数据。
+- 阶段一至十随功能同步建设测试；阶段十一补充跨平台、恢复、性能和发布验证，不替代底层测试。
+
+## 当前状态
+
+- 阶段一已完成：仓库可运行 Tauri 2、React、TypeScript、Rust 和 Tailwind CSS 最小应用。
+- 阶段二已完成：前端可选择目录、展示扫描进度和摘要；后端完成路径授权、只读扫描、SQLite 文件索引、错误记录、重复扫描和重建。
+- 阶段三已完成：前端可分页浏览、搜索、筛选和排序；后端完成索引分页查询、当前根目录原生变化监听、界面刷新和最近索引恢复。
+- 阶段四已完成：前端提供勾选、批量移动、单项重命名、From/To 预览、确认、结果、历史和撤销；后端完成安全校验、内存计划、逐项执行、迁移持久化和动态撤销资格判断。
+- 阶段五已接入本地 Ollama、格式受限的正文提取、结构化建议、进度与审查初版；仍待完成取消并发处理、根目录与文件变化复核、提取资源限制、预览采用顺序和真实黄金集验收，详见[开发路线图](./ROADMAP.md)。
+- 阶段六至十仅完成设计，尚无 IDE 工作台、知识空间、派生文本块/向量、RAG、Markdown/TXT 编辑或 Agent 运行时。

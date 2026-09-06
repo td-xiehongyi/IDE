@@ -7,6 +7,8 @@ coverage/
 
 # Rust and Tauri generated output
 src-tauri/target/
+src-tauri/target-knowledge-baseline/
+src-tauri/target-phase5/
 src-tauri/gen/
 
 # Local-only environment and tool files

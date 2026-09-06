@@ -20,3 +20,4 @@ src-tauri/gen/
 Thumbs.db
 .idea/
 .vscode/
+.worktrees/
